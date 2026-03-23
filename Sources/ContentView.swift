@@ -1549,11 +1549,14 @@ struct ContentView: View {
     @EnvironmentObject var tabManager: TabManager
     @EnvironmentObject var notificationStore: TerminalNotificationStore
     @EnvironmentObject var sidebarState: SidebarState
+    @EnvironmentObject var fileExplorerState: FileExplorerSidebarState
     @EnvironmentObject var sidebarSelectionState: SidebarSelectionState
     @State private var sidebarWidth: CGFloat = 200
+    @State private var fileExplorerWidth: CGFloat = CGFloat(SessionPersistencePolicy.defaultFileExplorerWidth)
     @State private var hoveredResizerHandles: Set<SidebarResizerHandle> = []
     @State private var isResizerDragging = false
-    @State private var sidebarDragStartWidth: CGFloat?
+    @State private var resizerDragStartWidth: CGFloat?
+    @State private var activeResizerHandle: SidebarResizerHandle?
     @State private var selectedTabIds: Set<UUID> = []
     @State private var mountedWorkspaceIds: [UUID] = []
     @State private var lastSidebarSelectionIndex: Int? = nil
@@ -2021,10 +2024,12 @@ struct ContentView: View {
     private static let commandPaletteVisiblePreviewResultLimit = 48
     private static let commandPaletteVisiblePreviewCandidateLimit = 192
     private static let minimumSidebarWidth: CGFloat = CGFloat(SessionPersistencePolicy.minimumSidebarWidth)
+    private static let minimumFileExplorerWidth: CGFloat = CGFloat(SessionPersistencePolicy.minimumFileExplorerWidth)
     private static let maximumSidebarWidthRatio: CGFloat = 1.0 / 3.0
 
     private enum SidebarResizerHandle: Hashable {
         case divider
+        case fileExplorerDivider
     }
 
     private var sidebarResizerSidebarHitWidth: CGFloat {
@@ -2051,11 +2056,36 @@ struct ContentView: View {
         return max(Self.minimumSidebarWidth, fallbackScreenWidth * Self.maximumSidebarWidthRatio)
     }
 
+    private func maxFileExplorerWidth(availableWidth: CGFloat? = nil) -> CGFloat {
+        let resolvedAvailableWidth = availableWidth
+            ?? observedWindow?.contentView?.bounds.width
+            ?? observedWindow?.contentLayoutRect.width
+            ?? NSApp.keyWindow?.contentView?.bounds.width
+            ?? NSApp.keyWindow?.contentLayoutRect.width
+        if let resolvedAvailableWidth, resolvedAvailableWidth > 0 {
+            return max(Self.minimumFileExplorerWidth, resolvedAvailableWidth * Self.maximumSidebarWidthRatio)
+        }
+
+        let fallbackScreenWidth = NSApp.keyWindow?.screen?.frame.width
+            ?? NSScreen.main?.frame.width
+            ?? 1920
+        return max(Self.minimumFileExplorerWidth, fallbackScreenWidth * Self.maximumSidebarWidthRatio)
+    }
+
     static func clampedSidebarWidth(_ candidate: CGFloat, maximumWidth: CGFloat) -> CGFloat {
         let minimumWidth = Self.minimumSidebarWidth
         let sanitizedMaximumWidth = max(minimumWidth, maximumWidth.isFinite ? maximumWidth : minimumWidth)
         guard candidate.isFinite else {
             return CGFloat(SessionPersistencePolicy.defaultSidebarWidth)
+        }
+        return max(minimumWidth, min(sanitizedMaximumWidth, candidate))
+    }
+
+    static func clampedFileExplorerWidth(_ candidate: CGFloat, maximumWidth: CGFloat) -> CGFloat {
+        let minimumWidth = Self.minimumFileExplorerWidth
+        let sanitizedMaximumWidth = max(minimumWidth, maximumWidth.isFinite ? maximumWidth : minimumWidth)
+        guard candidate.isFinite else {
+            return CGFloat(SessionPersistencePolicy.defaultFileExplorerWidth)
         }
         return max(minimumWidth, min(sanitizedMaximumWidth, candidate))
     }
@@ -2073,6 +2103,21 @@ struct ContentView: View {
 
     private func normalizedSidebarWidth(_ candidate: CGFloat) -> CGFloat {
         Self.clampedSidebarWidth(candidate, maximumWidth: maxSidebarWidth())
+    }
+
+    private func clampFileExplorerWidthIfNeeded(availableWidth: CGFloat? = nil) {
+        let nextWidth = Self.clampedFileExplorerWidth(
+            fileExplorerWidth,
+            maximumWidth: maxFileExplorerWidth(availableWidth: availableWidth)
+        )
+        guard abs(nextWidth - fileExplorerWidth) > 0.5 else { return }
+        withTransaction(Transaction(animation: nil)) {
+            fileExplorerWidth = nextWidth
+        }
+    }
+
+    private func normalizedFileExplorerWidth(_ candidate: CGFloat) -> CGFloat {
+        Self.clampedFileExplorerWidth(candidate, maximumWidth: maxFileExplorerWidth())
     }
 
     private func activateSidebarResizerCursor() {
@@ -2249,7 +2294,8 @@ struct ContentView: View {
                     TerminalWindowPortalRegistry.endInteractiveGeometryResize()
                     isResizerDragging = false
                 }
-                sidebarDragStartWidth = nil
+                resizerDragStartWidth = nil
+                activeResizerHandle = nil
                 isResizerBandActive = false
                 scheduleSidebarResizerCursorRelease(force: true)
             }
@@ -2259,30 +2305,59 @@ struct ContentView: View {
                         if !isResizerDragging {
                             TerminalWindowPortalRegistry.beginInteractiveGeometryResize()
                             isResizerDragging = true
-                            sidebarDragStartWidth = sidebarWidth
+                            activeResizerHandle = handle
+                            resizerDragStartWidth = currentResizerWidth(for: handle)
                         }
 
                         activateSidebarResizerCursor()
-                        let startWidth = sidebarDragStartWidth ?? sidebarWidth
-                        let nextWidth = Self.clampedSidebarWidth(
-                            startWidth + value.translation.width,
-                            maximumWidth: maxSidebarWidth(availableWidth: availableWidth)
-                        )
+                        let startWidth = resizerDragStartWidth ?? currentResizerWidth(for: handle)
+                        let nextWidth: CGFloat
+                        switch handle {
+                        case .divider:
+                            nextWidth = Self.clampedSidebarWidth(
+                                startWidth + value.translation.width,
+                                maximumWidth: maxSidebarWidth(availableWidth: availableWidth)
+                            )
+                        case .fileExplorerDivider:
+                            nextWidth = Self.clampedFileExplorerWidth(
+                                startWidth - value.translation.width,
+                                maximumWidth: maxFileExplorerWidth(availableWidth: availableWidth)
+                            )
+                        }
                         withTransaction(Transaction(animation: nil)) {
-                            sidebarWidth = nextWidth
+                            setResizerWidth(nextWidth, for: handle)
                         }
                     }
                     .onEnded { _ in
                         if isResizerDragging {
                             TerminalWindowPortalRegistry.endInteractiveGeometryResize()
                             isResizerDragging = false
-                            sidebarDragStartWidth = nil
+                            resizerDragStartWidth = nil
+                            activeResizerHandle = nil
                         }
                         activateSidebarResizerCursor()
                         scheduleSidebarResizerCursorRelease()
                     }
             )
             .modifier(SidebarResizerAccessibilityModifier(accessibilityIdentifier: accessibilityIdentifier))
+    }
+
+    private func currentResizerWidth(for handle: SidebarResizerHandle) -> CGFloat {
+        switch handle {
+        case .divider:
+            return sidebarWidth
+        case .fileExplorerDivider:
+            return fileExplorerWidth
+        }
+    }
+
+    private func setResizerWidth(_ width: CGFloat, for handle: SidebarResizerHandle) {
+        switch handle {
+        case .divider:
+            sidebarWidth = width
+        case .fileExplorerDivider:
+            fileExplorerWidth = width
+        }
     }
 
     private var sidebarResizerOverlay: some View {
@@ -2317,6 +2392,38 @@ struct ContentView: View {
         }
     }
 
+    private var fileExplorerResizerOverlay: some View {
+        GeometryReader { proxy in
+            let totalWidth = max(0, proxy.size.width)
+            let dividerX = max(0, min(totalWidth, totalWidth - fileExplorerWidth))
+            let leadingWidth = max(0, dividerX - sidebarResizerHitWidthPerSide)
+
+            HStack(spacing: 0) {
+                Color.clear
+                    .frame(width: leadingWidth)
+                    .allowsHitTesting(false)
+
+                sidebarResizerHandleOverlay(
+                    .fileExplorerDivider,
+                    width: sidebarResizerHitWidthPerSide * 2,
+                    availableWidth: totalWidth,
+                    accessibilityIdentifier: "FileExplorerSidebarResizer"
+                )
+
+                Color.clear
+                    .frame(maxWidth: .infinity)
+                    .allowsHitTesting(false)
+            }
+            .frame(width: totalWidth, height: proxy.size.height, alignment: .leading)
+            .onAppear {
+                clampFileExplorerWidthIfNeeded(availableWidth: totalWidth)
+            }
+            .onChange(of: totalWidth) {
+                clampFileExplorerWidthIfNeeded(availableWidth: totalWidth)
+            }
+        }
+    }
+
     private var sidebarView: some View {
         VerticalTabsSidebar(
             updateViewModel: updateViewModel,
@@ -2327,6 +2434,17 @@ struct ContentView: View {
         )
         .frame(width: sidebarWidth)
         .frame(maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var selectedWorkspace: Workspace? {
+        guard let selectedId = tabManager.selectedTabId else { return nil }
+        return tabManager.tabs.first(where: { $0.id == selectedId })
+    }
+
+    private var fileExplorerView: some View {
+        FileExplorerSidebarView(workspace: selectedWorkspace)
+            .frame(width: fileExplorerWidth)
+            .frame(maxHeight: .infinity, alignment: .topLeading)
     }
 
     /// Space at top of content area for the titlebar. This must be at least the actual titlebar
@@ -2437,6 +2555,7 @@ struct ContentView: View {
             notificationStore: TerminalNotificationStore.shared,
             viewModel: fullscreenControlsViewModel,
             onToggleSidebar: { sidebarState.toggle() },
+            onToggleFileExplorer: { fileExplorerState.toggle() },
             onToggleNotifications: { [fullscreenControlsViewModel] in
                 AppDelegate.shared?.toggleNotificationsPopover(
                     animated: true,
@@ -2587,13 +2706,19 @@ struct ContentView: View {
             // Overlay mode: terminal extends full width, sidebar on top
             // This allows withinWindow blur to see the terminal content
             layout = AnyView(
-                ZStack(alignment: .leading) {
-                    terminalContentWithSidebarDropOverlay
-                        .padding(.leading, sidebarState.isVisible ? sidebarWidth : 0)
-                    if sidebarState.isVisible {
-                        sidebarView
+                terminalContentWithSidebarDropOverlay
+                    .padding(.leading, sidebarState.isVisible ? sidebarWidth : 0)
+                    .padding(.trailing, fileExplorerState.isVisible ? fileExplorerWidth : 0)
+                    .overlay(alignment: .leading) {
+                        if sidebarState.isVisible {
+                            sidebarView
+                        }
                     }
-                }
+                    .overlay(alignment: .trailing) {
+                        if fileExplorerState.isVisible {
+                            fileExplorerView
+                        }
+                    }
             )
         } else {
             // Standard HStack mode for behindWindow blur
@@ -2603,6 +2728,9 @@ struct ContentView: View {
                         sidebarView
                     }
                     terminalContentWithSidebarDropOverlay
+                    if fileExplorerState.isVisible {
+                        fileExplorerView
+                    }
                 }
             )
         }
@@ -2612,6 +2740,12 @@ struct ContentView: View {
                 .overlay(alignment: .leading) {
                     if sidebarState.isVisible {
                         sidebarResizerOverlay
+                            .zIndex(1000)
+                    }
+                }
+                .overlay(alignment: .leading) {
+                    if fileExplorerState.isVisible {
+                        fileExplorerResizerOverlay
                             .zIndex(1000)
                     }
                 }
@@ -2645,6 +2779,7 @@ struct ContentView: View {
             if abs(sidebarState.persistedWidth - restoredWidth) > 0.5 {
                 sidebarState.persistedWidth = restoredWidth
             }
+            fileExplorerWidth = fileExplorerState.persistedWidth
             if selectedTabIds.isEmpty, let selectedId = tabManager.selectedTabId {
                 selectedTabIds = [selectedId]
                 lastSidebarSelectionIndex = tabManager.tabs.firstIndex { $0.id == selectedId }
@@ -3040,7 +3175,11 @@ struct ContentView: View {
         view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { notification in
             guard let window = notification.object as? NSWindow,
                   window === observedWindow else { return }
-            clampSidebarWidthIfNeeded(availableWidth: window.contentView?.bounds.width ?? window.contentLayoutRect.width)
+            let availableWidth = window.contentView?.bounds.width ?? window.contentLayoutRect.width
+            clampSidebarWidthIfNeeded(availableWidth: availableWidth)
+            if fileExplorerState.isVisible {
+                clampFileExplorerWidthIfNeeded(availableWidth: availableWidth)
+            }
             updateSidebarResizerBandState()
         })
 
@@ -3063,7 +3202,46 @@ struct ContentView: View {
             updateSidebarResizerBandState()
         })
 
+        view = AnyView(view.onChange(of: fileExplorerWidth) { _ in
+            let sanitized = normalizedFileExplorerWidth(fileExplorerWidth)
+            if abs(fileExplorerWidth - sanitized) > 0.5 {
+                fileExplorerWidth = sanitized
+                return
+            }
+            if abs(fileExplorerState.persistedWidth - sanitized) > 0.5 {
+                fileExplorerState.persistedWidth = sanitized
+            }
+            guard fileExplorerState.isVisible else { return }
+            if let observedWindow {
+                TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronize(for: observedWindow)
+            } else {
+                TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronizeForAllWindows()
+            }
+            updateSidebarResizerBandState()
+        })
+
         view = AnyView(view.onChange(of: sidebarState.isVisible) { _ in
+            if let observedWindow {
+                TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronize(for: observedWindow)
+            } else {
+                TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronizeForAllWindows()
+            }
+            updateSidebarResizerBandState()
+        })
+
+        view = AnyView(view.onChange(of: fileExplorerState.isVisible) { _ in
+            if fileExplorerState.isVisible {
+                let restoredWidth = normalizedFileExplorerWidth(fileExplorerState.persistedWidth)
+                if abs(fileExplorerWidth - restoredWidth) > 0.5 {
+                    fileExplorerWidth = restoredWidth
+                }
+                if let observedWindow {
+                    let availableWidth = observedWindow.contentView?.bounds.width ?? observedWindow.contentLayoutRect.width
+                    clampFileExplorerWidthIfNeeded(availableWidth: availableWidth)
+                } else {
+                    clampFileExplorerWidthIfNeeded()
+                }
+            }
             if let observedWindow {
                 TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronize(for: observedWindow)
             } else {
@@ -3078,9 +3256,21 @@ struct ContentView: View {
                 sidebarState.persistedWidth = sanitized
                 return
             }
-            guard !isResizerDragging else { return }
+            guard activeResizerHandle != .divider else { return }
             if abs(sidebarWidth - sanitized) > 0.5 {
                 sidebarWidth = sanitized
+            }
+        })
+
+        view = AnyView(view.onChange(of: fileExplorerState.persistedWidth) { newValue in
+            let sanitized = normalizedFileExplorerWidth(newValue)
+            if abs(newValue - sanitized) > 0.5 {
+                fileExplorerState.persistedWidth = sanitized
+                return
+            }
+            guard activeResizerHandle != .fileExplorerDivider else { return }
+            if abs(fileExplorerWidth - sanitized) > 0.5 {
+                fileExplorerWidth = sanitized
             }
         })
 
@@ -3093,13 +3283,15 @@ struct ContentView: View {
             if isResizerDragging {
                 TerminalWindowPortalRegistry.endInteractiveGeometryResize()
                 isResizerDragging = false
-                sidebarDragStartWidth = nil
+                resizerDragStartWidth = nil
+                activeResizerHandle = nil
             }
             removeSidebarResizerPointerMonitor()
         })
 
         view = AnyView(view.background(WindowAccessor { [sidebarBlendMode, bgGlassEnabled, bgGlassTintHex, bgGlassTintOpacity] window in
             window.identifier = NSUserInterfaceItemIdentifier(windowIdentifier)
+            window.isRestorable = false
             window.titlebarAppearsTransparent = true
             // Do not make the entire background draggable; it interferes with drag gestures
             // like sidebar tab reordering in multi-window mode.
@@ -3114,7 +3306,11 @@ struct ContentView: View {
                 DispatchQueue.main.async {
                     observedWindow = window
                     isFullScreen = window.styleMask.contains(.fullScreen)
-                    clampSidebarWidthIfNeeded(availableWidth: window.contentView?.bounds.width ?? window.contentLayoutRect.width)
+                    let availableWidth = window.contentView?.bounds.width ?? window.contentLayoutRect.width
+                    clampSidebarWidthIfNeeded(availableWidth: availableWidth)
+                    if fileExplorerState.isVisible {
+                        clampFileExplorerWidthIfNeeded(availableWidth: availableWidth)
+                    }
                     syncCommandPaletteDebugStateForObservedWindow()
                     installSidebarResizerPointerMonitorIfNeeded()
                     updateSidebarResizerBandState()
@@ -3174,6 +3370,7 @@ struct ContentView: View {
                 windowId: windowId,
                 tabManager: tabManager,
                 sidebarState: sidebarState,
+                fileExplorerState: fileExplorerState,
                 sidebarSelectionState: sidebarSelectionState
             )
             installFileDropOverlay(on: window, tabManager: tabManager)
