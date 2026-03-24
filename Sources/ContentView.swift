@@ -2396,7 +2396,7 @@ struct ContentView: View {
         GeometryReader { proxy in
             let totalWidth = max(0, proxy.size.width)
             let dividerX = max(0, min(totalWidth, totalWidth - fileExplorerWidth))
-            let leadingWidth = max(0, dividerX - sidebarResizerHitWidthPerSide)
+            let leadingWidth = max(0, dividerX - sidebarResizerContentHitWidth)
 
             HStack(spacing: 0) {
                 Color.clear
@@ -2405,7 +2405,7 @@ struct ContentView: View {
 
                 sidebarResizerHandleOverlay(
                     .fileExplorerDivider,
-                    width: sidebarResizerHitWidthPerSide * 2,
+                    width: SidebarResizeInteraction.totalHitWidth,
                     availableWidth: totalWidth,
                     accessibilityIdentifier: "FileExplorerSidebarResizer"
                 )
@@ -3141,6 +3141,7 @@ struct ContentView: View {
 
         view = AnyView(view.background(WindowAccessor(dedupeByWindow: false) { window in
             MainActor.assumeIsolated {
+                WindowFrameAutosaveCleanup.clampInvalidMainWindowFrameIfNeeded(window)
                 let tmuxOverlayController = tmuxWorkspacePaneWindowOverlayController(for: window)
                 tmuxOverlayController.update(state: tmuxWorkspacePaneWindowOverlayState(for: window))
                 let overlayController = commandPaletteWindowOverlayController(for: window)
@@ -3290,6 +3291,7 @@ struct ContentView: View {
         })
 
         view = AnyView(view.background(WindowAccessor { [sidebarBlendMode, bgGlassEnabled, bgGlassTintHex, bgGlassTintOpacity] window in
+            WindowFrameAutosaveCleanup.clampInvalidMainWindowFrameIfNeeded(window)
             window.identifier = NSUserInterfaceItemIdentifier(windowIdentifier)
             window.isRestorable = false
             window.titlebarAppearsTransparent = true

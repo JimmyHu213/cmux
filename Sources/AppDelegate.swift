@@ -15,6 +15,16 @@ final class MainWindowHostingView<Content: View>: NSHostingView<Content> {
     override var safeAreaInsets: NSEdgeInsets { NSEdgeInsetsZero }
     override var safeAreaRect: NSRect { bounds }
     override var safeAreaLayoutGuide: NSLayoutGuide { zeroSafeAreaLayoutGuide }
+    override var intrinsicContentSize: NSSize {
+        if bounds.width > 0, bounds.height > 0 {
+            return bounds.size
+        }
+
+        return NSSize(
+            width: CGFloat(SessionPersistencePolicy.minimumWindowWidth),
+            height: CGFloat(SessionPersistencePolicy.minimumWindowHeight)
+        )
+    }
 
     required init(rootView: Content) {
         super.init(rootView: rootView)

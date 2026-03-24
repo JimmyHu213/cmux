@@ -145,6 +145,42 @@ enum WindowFrameAutosaveCleanup {
             defaults.removeObject(forKey: key)
         }
     }
+
+    @MainActor
+    static func clampInvalidMainWindowFrameIfNeeded(
+        _ window: NSWindow,
+        defaults: UserDefaults = .standard
+    ) {
+        let frame = window.frame
+        guard frame.width.isFinite,
+              frame.height.isFinite,
+              frame.origin.x.isFinite,
+              frame.origin.y.isFinite else {
+            removeMainWindowAutosaveFrames(defaults: defaults)
+            return
+        }
+
+        guard let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else { return }
+
+        let minWidth = CGFloat(SessionPersistencePolicy.minimumWindowWidth)
+        let minHeight = CGFloat(SessionPersistencePolicy.minimumWindowHeight)
+        let width = min(max(frame.width, minWidth), visibleFrame.width)
+        let height = min(max(frame.height, minHeight), visibleFrame.height)
+        let maxX = visibleFrame.maxX - width
+        let maxY = visibleFrame.maxY - height
+        let x = min(max(frame.minX, visibleFrame.minX), maxX)
+        let y = min(max(frame.minY, visibleFrame.minY), maxY)
+        let clamped = CGRect(x: x, y: y, width: width, height: height)
+
+        let widthDelta = abs(frame.width - clamped.width)
+        let heightDelta = abs(frame.height - clamped.height)
+        let xDelta = abs(frame.minX - clamped.minX)
+        let yDelta = abs(frame.minY - clamped.minY)
+        guard widthDelta > 0.5 || heightDelta > 0.5 || xDelta > 0.5 || yDelta > 0.5 else { return }
+
+        removeMainWindowAutosaveFrames(defaults: defaults)
+        window.setFrame(clamped, display: false)
+    }
 }
 
 private struct XCTestHostWindowBootstrapView: View {
