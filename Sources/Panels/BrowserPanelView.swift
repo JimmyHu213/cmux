@@ -735,6 +735,7 @@ struct BrowserPanelView: View {
                 browserProfileButton
                 browserThemeModeButton
                 developerToolsButton
+                openInDefaultBrowserButton
             }
         }
         .padding(.horizontal, 8)
@@ -838,6 +839,26 @@ struct BrowserPanelView: View {
         .frame(width: addressBarButtonSize, height: addressBarButtonSize, alignment: .center)
         .safeHelp(developerToolsButtonHelp)
         .accessibilityIdentifier("BrowserToggleDevToolsButton")
+    }
+
+    private var openInDefaultBrowserButton: some View {
+        Button(action: {
+            if let url = panel.currentURL {
+                NSWorkspace.shared.open(url)
+            }
+        }) {
+            Image(systemName: "arrow.up.right.square")
+                .symbolRenderingMode(.monochrome)
+                .cmuxFlatSymbolColorRendering()
+                .font(.system(size: devToolsButtonIconSize, weight: .medium))
+                .foregroundStyle(devToolsColorOption.color)
+                .frame(width: addressBarButtonSize, height: addressBarButtonSize, alignment: .center)
+        }
+        .buttonStyle(OmnibarAddressButtonStyle())
+        .frame(width: addressBarButtonSize, height: addressBarButtonSize, alignment: .center)
+        .safeHelp(String(localized: "browser.openInDefaultBrowser", defaultValue: "Open in Default Browser"))
+        .accessibilityIdentifier("BrowserOpenInDefaultBrowserButton")
+        .disabled(panel.currentURL == nil)
     }
 
     private var browserProfileButton: some View {
